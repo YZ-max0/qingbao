@@ -1,0 +1,44 @@
+# ── 密钥与本地配置（绝不提交）─────────────────────────────
+**/llm.local.yaml
+**/secrets.local.ps1
+**/.env
+**/*.local.yaml
+**/*.local.ps1
+!**/*.example.yaml
+!**/*.example.ps1
+**/*.bak
+
+# ── 数据与产物 ─────────────────────────────────────────-
+**/data/
+**/logs/
+**/*.sqlite3
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+**/*.db
+
+# 个人分析成果（各人业务数据，不适合公开）
+competitor-reports/
+
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ── 编辑器 / 系统 ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 系统日志 ──────────────────────────────────────────
+*.log
+acl-report-*.jsonl
+acl-backup-*.json

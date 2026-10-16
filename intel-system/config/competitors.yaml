@@ -1,0 +1,87 @@
+# 仓储 AMR 竞品清单 —— 按监控优先级分梯队
+# 原则：先只监控第一梯队 + 行业源，跑两周看信号质量再扩
+
+sector: 智能制造 / 智慧物流机器人
+focus: 仓储 AMR
+company: 磅旗科技
+
+tiers:
+
+  # ── 第一梯队：高频监控（官网变更 + 招标关键词强匹配）──────────
+  tier1:
+    - name: 海柔创新
+      en: Hai Robotics
+      focus: 料箱机器人 / 货到人仓储 / ACR
+      watch: [官网产品页, 定价, 招聘, 融资, 中标]
+      urls:
+        site: https://www.hairobotics.com/
+        products: https://www.hairobotics.com/solutions/haipick-climb
+        news: https://www.hairobotics.com/news
+      # 注: /careers/、/resources/news 实测 404；/news 已实测有效
+
+    - name: 快仓智能
+      en: Quicktron
+      focus: AMR移动机器人 / 智能搬运 / 货架到人
+      watch: [官网产品页, 招聘, 融资, 中标]
+      urls:
+        site: https://www.quicktron.com/
+        news: https://www.quicktron.com/news/
+
+    - name: 今天国际
+      en: New Trend International Logis-Tech
+      focus: 物流自动化 / 仓储系统集成 / WMS
+      list_status: 上市公司        # 走 AkShare 抓公告，API 通路
+      stock_code: "300532"
+      watch: [定期报告, 重大合同公告, 中标公告, 招聘]
+      urls:
+        site: https://www.nti56.com/
+        # 实测: /news、/xinwen、/about/news 均 404；官网为 Nuxt SPA，
+        # 首页不暴露资讯链接，静态抓取拿不到。资讯改由上市公告覆盖。
+      # 注: cloud.nti56.com/appDetails 是应用市场（产品页），非资讯页
+
+    - name: 极智数通
+      en: Geek+
+      focus: 智能仓储集成 / WMS / WCS / 货到人
+      watch: [官网产品页, 招聘, 融资, 中标]
+      urls:
+        site: https://www.geekplus.com/
+        news: https://blog.geekplus.com/     # 实测: 新闻在独立博客域名
+
+    - name: 仙工智能
+      en: Seer Group
+      focus: 机器人控制器 / 产线协同 / 调度系统
+      watch: [官网产品页, 控制器发布, 招聘, 中标]
+      urls:
+        site: https://www.seer-group.com/
+        # 实测: /news 会跳转，新闻实际在 seer-robotics.ai/media
+        news: https://seer-robotics.ai/media
+
+  # ── 第二梯队：中频监控（融资 + 标杆案例）─────────────────────
+  tier2:
+    - name: 迦智科技
+      focus: 高精度重载AMR / 半导体光伏搬运
+    - name: 优艾智合
+      focus: 复合移动机器人 / 精密操作
+    - name: 国自机器人
+      focus: 重载AGV / 特种物流机器人
+    - name: 寻迹智行
+      focus: AGV/AMR / 无人叉车 / 产线物流
+    - name: 艾吉威
+      focus: 无轨导航AGV / 传统工厂AGV改造
+
+  # ── 第三梯队：低频观察（技术标杆 + 平台风向）─────────────────
+  tier3:
+    overseas:
+      - name: GreyOrange
+        focus: 仓储机器人 / 货到人系统
+      - name: AutoStore
+        focus: 料箱到人 / 密集存储
+      - name: Locus Robotics
+        focus: 货到人 AMR
+    platform:                  # 平台层，看风向而非直接对标
+      - name: 西门子
+        focus: 工业自动化 / 数字化工厂
+      - name: 华为制造云
+        focus: 工业云 / MES/ERP集成
+      - name: 富士康工业互联网
+        focus: 智能制造 / 工业互联网

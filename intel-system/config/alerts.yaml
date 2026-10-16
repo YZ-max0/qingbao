@@ -1,0 +1,61 @@
+# 告警配置
+# 设计原则：只推送"新出现的"高价值信号，同一事件只提醒一次，避免天天刷屏。
+
+enabled: true
+
+# ── 触发条件：命中任一标签即告警 ────────────────────────────
+# 当前配置：全范围推送。
+# 若日后觉得太吵，把 官网变更 / 新品发布 两行注释掉即可。
+triggers:
+  tags:
+    - 重大变更          # 控制权/收购/重组 —— 最高优先级
+    - 融资动态          # 融资 / 股本变动（含媒体融资报道）
+    - 订单信号          # 中标/重大合同
+    - 竞品命中          # 招标中直接出现竞品名
+    - 新品发布          # 行业媒体报道的新品/展会
+    - 官网变更          # 竞品官网内容变化
+  min_relevance: 0.7    # 相关度门槛
+  max_items: 25         # 单次推送条数上限
+
+  # 积压保护：首次运行的库里可能已有大量历史事件，若不限制会连续多轮
+  # 推送、把群刷屏。超过 backlog_threshold 时只推最新的一批，其余直接
+  # 标记为已发（视为"历史存量"，不再补推）。
+  backlog_threshold: 40
+
+# ── 推送渠道：按需启用，凭据走环境变量，不写进配置文件 ───────
+channels:
+
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    use_tls: true
+    username_env: ALERT_SMTP_USER
+    password_env: ALERT_SMTP_PASS
+    from_addr: ""            # 留空则用 username
+    to_addrs:                # 收件人
+      - ""
+    subject_prefix: "[竞品情报]"
+
+  dingtalk:
+    # 钉钉群机器人 Webhook。安全设置建议用"加签"，填 secret_env。
+    enabled: false
+    webhook_env: ALERT_DINGTALK_WEBHOOK
+    secret_env: ALERT_DINGTALK_SECRET
+    keyword: 竞品情报         # 若用"自定义关键词"安全设置，消息须含此词
+
+  webhook:
+    # 通用 Webhook：自动识别平台，各用对应格式
+    #   企业微信 qyapi.weixin.qq.com  -> {"msgtype":"text",...}
+    #   飞书     open.feishu.cn       -> {"msg_type":"text",...}
+    #   Slack    hooks.slack.com      -> {"text":...}
+    #   钉钉     oapi.dingtalk.com    -> markdown
+    #   其他（自建/n8n/Server酱）      -> 结构化 JSON
+    enabled: true
+    url_env: ALERT_WEBHOOK_URL
+    timeout: 15
+
+# ── 说明 ──────────────────────────────────────────────────
+# 1. 所有凭据通过环境变量注入，配置文件里只写变量名。
+# 2. 同一事件在同一渠道只推送一次（alerts_sent 表去重）。
+# 3. 邮件用 SMTP；钉钉用加签；通用 Webhook 发 JSON。

@@ -1,0 +1,59 @@
+# 信息源配置 —— 区分 API 通路与爬虫通路
+# ⚠️ 本文件中的状态来自 2026-10 的实测，不是猜测。接入新源前请先验证。
+
+# ── 实测状态说明 ─────────────────────────────────────────────
+# verified_ok      : 已实测可访问且有数据
+# needs_render     : JS 动态渲染，requests 取不到内容，需浏览器渲染
+# robots_disallow  : robots.txt 明确禁止，合规上不抓
+# rate_limited     : 存在 IP 级频率限制，需极低频 + 人工兜底
+# unused_api       : 接口存在但参数模型未跑通，暂不依赖
+
+sources:
+
+  policy_json_api:
+    # 政府站点 JSON 检索接口（比爬 HTML 稳，但参数模型需进一步逆向后才能用）
+    - name: 中国政府网-政策检索
+      url: https://sousuo.www.gov.cn/search-gov/data
+      status: unused_api
+      note: "接口返回 code:200 但 q 参数始终 0 条，参数模型未跑通；暂不依赖"
+
+  policy_pages:
+    - name: 中国政府网-最新政策
+      url: https://www.gov.cn/zhengce/zuixin/
+      status: needs_render
+      note: "列表为 JS 动态渲染，静态 HTML 无内容链接"
+    - name: 发改委-政策发布
+      url: https://www.ndrc.gov.cn/xxgk/zcfb/
+      status: robots_disallow
+      note: "robots.txt 禁止抓取，合规上不抓"
+    - name: 工信部-政策文件
+      url: https://www.miit.gov.cn/zwgk/zcwj/index.html
+      status: needs_render
+      note: "返回空内容，需渲染或走其 API 网关"
+
+  tender:
+    - name: 中国政府采购网
+      url: https://search.ccgp.gov.cn/bxsearch
+      status: rate_limited
+      protocol: https        # 实测：HTTP 被拦，必须走 HTTPS
+      note: "存在 IP 级频率限制，返回'频繁访问'拦截页；需极低频，或改用人工/第三方数据服务"
+
+  rss:
+    # 目前未验证到可用的官方 RSS 源；找到后填入此处，优先级高于页面解析
+    - name: (待补充)
+      url: ""
+      status: pending
+
+# ── 结论与建议 ───────────────────────────────────────────────
+# 政府/招标类站点的稳定获取方式，按可靠性排序：
+#   1. 官方开放数据 / 第三方数据服务 API（付费，最稳）
+#   2. 浏览器渲染抓取（playwright）—— 能解决 needs_render
+#   3. 极低频抓取 + 人工核对 —— 适合 rate_limited
+# 不要把"能跑一次"当成"能稳定跑"，这正是本文件记录 status 的原因。
+
+# ── 抓取约束 ────────────────────────────────────────────────
+crawl_policy:
+  delay_seconds: [3, 6]        # 政府站点：比通用值更保守
+  timeout: 20
+  max_retries: 2
+  respect_robots: true

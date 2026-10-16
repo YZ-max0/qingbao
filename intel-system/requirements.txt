@@ -1,0 +1,10 @@
+requests>=2.32
+httpx>=0.27
+feedparser>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0
+PyYAML>=6.0
+akshare>=1.19          # 上市公告 / 财务数据（API 通路，最稳的一环）
+
+# 可选：JS 动态渲染站点（政府栏目页需要）
+# playwright>=1.40
