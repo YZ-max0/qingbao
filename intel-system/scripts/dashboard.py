@@ -908,7 +908,7 @@ PAGE = r"""<!DOCTYPE html>
   <button onclick="clearSel()">取消选择</button>
 </div>
 
-<footer>数据源：上市公告 / 招投标 / 官网变更 / 政策 / 行业媒体 / 深度分析 · 本地运行，仅监听 127.0.0.1</footer>
+<footer>数据源：上市公告 / 招投标 / 官网变更 / 政策 / 行业媒体 / 深度分析 · 本地部署</footer>
 
 <!-- 深度报告弹层 -->
 <div class="modal-mask" id="reportMask" onclick="if(event.target===this)closeReport()">
@@ -1382,19 +1382,57 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeReport(
 """
 
 
+def _lan_ip() -> str:
+    """取本机在局域网中的 IPv4 地址（用于提示同事的访问地址）。
+
+    用 UDP socket 探测默认出口地址 —— 不会真的发包，
+    但能让系统选出正确的网卡（避免拿到 WSL 的虚拟网段）。
+    """
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("223.5.5.5", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="竞品情报看板")
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="监听地址。127.0.0.1=仅本机；0.0.0.0=允许局域网访问")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
 
     db.init_db()  # 确保看板所需字段存在
-    url = f"http://{args.host}:{args.port}/"
 
+    local_url = f"http://127.0.0.1:{args.port}/"
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"竞品情报看板已启动: {url}")
+
+    print("竞品情报看板已启动")
+    print(f"  本机访问: {local_url}")
+
+    # 绑定 0.0.0.0 时，额外打印局域网地址，方便直接转发给同事
+    if args.host in ("0.0.0.0", "::"):
+        ip = _lan_ip()
+        if ip:
+            print(f"  同事访问: http://{ip}:{args.port}/")
+        print()
+        print("  ⚠️ 已开放到局域网，且未设鉴权 —— 同网段内任何人都能查看、")
+        print("     修改和导出数据。仅建议在可信的内网环境使用。")
+    else:
+        print("  （仅本机可访问。要让同事访问，加 --host 0.0.0.0）")
+
     print("按 Ctrl+C 停止")
+
+    if not args.no_browser:
+        try:
+            webbrowser.open(local_url)
+        except Exception:  # noqa: BLE001
+            pass
 
     if not args.no_browser:
         try:
