@@ -1,5 +1,8 @@
 # 仓储 AMR 竞品情报系统
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 面向**仓储 AMR（料箱机器人 / 货到人 / 无人叉车 / 仓储集成）**赛道的竞品情报系统。
 
 从公开渠道持续采集对手动态，用 LLM 提炼成可读情报，通过企业微信推送，
@@ -269,12 +272,12 @@ qingbao/
 
 ## 许可
 
-本仓库中 `intel-system/` 为原创代码。
+本项目采用 **MIT License**，详见 [LICENSE](LICENSE)。
 
-`third_party/competitor-intel/` 来自
+`third_party/competitor-intel/` 是独立作品，来自
 [WwaitW/competitor-intel](https://github.com/WwaitW/competitor-intel)，
-采用 **MIT License**，其原始许可证保留在该目录的 `LICENSE` 文件中。
-我们对它的改动记录在 `本地改造说明.md`。
+采用其自身的 MIT 许可证，版权归原作者所有 —— 其原始许可证保留在该目录的
+`LICENSE` 文件中，我们对它的改动记录在同目录的 `本地改造说明.md`。
 
 ---
 
