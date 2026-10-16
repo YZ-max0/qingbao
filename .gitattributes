@@ -1,0 +1,54 @@
+# 换行符策略：显式声明，避免跨平台 clone 后脚本失效。
+#
+# 背景（实测）：
+#   .bat 用 LF 换行时，cmd.exe 不认为 @echo off 生效，
+#   会把每一行 REM 注释当命令执行并报错。
+#   .ps1 的 BOM 若被剥离，Windows PowerShell 会按 ANSI 读取，中文变乱码。
+
+# 默认：检出时用平台原生换行，提交时统一存 LF
+* text=auto
+
+# ── 必须保持 LF 的（脚本解释器对 CRLF 敏感）───────────────
+*.sh            text eol=lf
+
+# ── 必须保持 CRLF 的（cmd.exe 要求）─────────────────────
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# ── 二进制，不做任何转换 ───────────────────────────────
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.ico           binary
+*.pdf           binary
+*.zip           binary
+*.gz            binary
+*.sqlite3       binary
+*.db            binary
+*.xlsx          binary
+*.docx          binary
+*.pptx          binary
+
+# ── 文本，统一按 LF 存储 ───────────────────────────────
+*.py            text linguist-language=Python
+*.md            text
+*.yaml          text
+*.yml           text
+*.json          text
+*.sql           text
+*.txt           text
+*.html          text
+*.css           text
+*.js            text
+
+# ── PowerShell 脚本 ────────────────────────────────────
+# 注意：.gitattributes 无法保证 BOM 被保留。
+# 若 clone 后发现 .ps1 中文乱码，用带 BOM 的编辑器重新保存
+# （VS Code 右下角编码 -> Save with Encoding -> UTF-8 with BOM）。
+*.ps1           text eol=crlf linguist-language=PowerShell
+*.bat           text eol=crlf linguist-language=Batchfile
+
+# ── 语言统计：第三方代码不计入本仓库语言占比 ───────────
+third_party/**  linguist-vendored
