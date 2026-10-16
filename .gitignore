@@ -42,3 +42,6 @@ desktop.ini
 *.log
 acl-report-*.jsonl
 acl-backup-*.json
+
+# 迁移归档（含历史数据库与日志，不进版本库）
+_archive_*/
