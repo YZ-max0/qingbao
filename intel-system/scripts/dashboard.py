@@ -41,13 +41,30 @@ CHANNEL_LABEL = {
     "analysis_src": "分析来源",
 }
 
-# 页面上可勾选的标签（与采集侧的标签保持一致）。
+# 标签栏内容按 Tab 切换 —— 两个 Tab 用的是完全不同的标签体系。
+#
+# 踩过的坑：深度分析 Tab 的记录只带「深度分析」「搜索来源」两个标签，
+# 而标签栏固定显示下面那 9 个"信号类型"。用户点任何标签都得到 0 条，
+# 看起来就是"筛选坏了"。所以标签栏必须随 Tab 变化。
+#
 # 不含「已解析」：那是采集流程的内部状态（详情页是否抓过），
 # 对判读情报没有价值，暴露出来只会让筛选栏变长。
-ALL_TAGS = [
+DAILY_TAGS = [
     "重大变更", "融资动态", "融资信号", "订单信号", "新品发布", "竞品命中",
     "官网变更", "中标", "招标",
 ]
+DEEP_TAGS = ["深度分析", "搜索来源"]
+
+# 兼容旧调用
+ALL_TAGS = DAILY_TAGS
+
+TAB_TAGS = {"daily": DAILY_TAGS, "deep": DEEP_TAGS}
+
+# 各 Tab 的默认相关度门槛。
+# 深度分析的 relevance 是人工设定的固定值（报告 0.9 / 来源 0.5），
+# 用"≥0.7"这种面向采集数据的门槛会把 222 条来源全部滤掉 ——
+# 表现为"什么筛选都没反应"。所以该 Tab 默认不带门槛。
+TAB_MIN_REL = {"daily": "0.7", "deep": ""}
 
 SORTABLE = {
     "published_at": "e.published_at",
@@ -317,19 +334,32 @@ def api_facets(q: dict | None = None) -> dict:
     q = q or {}
     # 复用 build_query 的过滤逻辑，但排除 tags 本身：
     # 每个标签的计数应基于"其余条件"，标签之间仍是 OR 关系。
-    base_q = {k: v for k, v in q.items() if k not in ("tags", "limit", "offset", "sort", "order")}
+    # omitTags / omitSignals 是前端传的控制标记，不能进入 SQL 条件
+    _NON_FILTER = ("tags", "limit", "offset", "sort", "order",
+                   "omitTags", "omitSignals")
+    base_q = {k: v for k, v in q.items() if k not in _NON_FILTER}
     where_sql, base_args = _filters_only(base_q)
     cond = f" AND ({where_sql})" if where_sql else ""
 
     with db.connect() as conn:
-        entities = [
+        # 竞品下拉：计数必须带当前筛选（cond），否则数字与"点下去看到几条"
+        # 对不上 —— 标签计数踩过同样的坑。
+        # 另返回 entity_total（有归属竞品的记录总数），供前端显示 "N/总数"。
+        ent_rows = [
             {"value": r["entity"], "count": r["n"]}
             for r in conn.execute(
                 "SELECT entity, COUNT(*) n FROM events "
-                "WHERE entity IS NOT NULL AND entity<>'' "
-                "GROUP BY entity ORDER BY n DESC"
+                "WHERE entity IS NOT NULL AND entity<>''" + cond +
+                " GROUP BY entity ORDER BY n DESC",
+                base_args,
             )
         ]
+        entities = ent_rows
+        entity_total = conn.execute(
+            "SELECT COUNT(*) FROM events "
+            "WHERE entity IS NOT NULL AND entity<>''" + cond,
+            base_args,
+        ).fetchone()[0]
         # 频道计数：全局量（不受任何筛选影响）。
         #
         # 口径必须与「全部」统计卡一致 —— 两者都表达"这个范围总共有多少条"。
@@ -387,8 +417,11 @@ def api_facets(q: dict | None = None) -> dict:
             "starred": _count_with({"starred": "1"}),
             # 兼容：旧前端若仍读这些字段
             "days_default": days_default,
+            "entity_total": entity_total,
         }
-        # 标签计数：同样限定在"其余筛选条件"下，保证数字能预测点击后的结果
+        # 标签计数：按当前 Tab 的标签集算，且限定在"其余筛选条件"下，
+        # 保证数字能预测点击后的结果。
+        tabs_cfg = TAB_TAGS.get(q.get("tab") or "daily", DAILY_TAGS)
         tag_counts = [
             {
                 "name": name,
@@ -397,7 +430,7 @@ def api_facets(q: dict | None = None) -> dict:
                     [f"%{name}%"] + base_args,
                 ).fetchone()[0],
             }
-            for name in ALL_TAGS
+            for name in tabs_cfg
         ]
         # 近 14 天各竞品动态趋势（补齐空缺日期，否则柱子挤在一起看不出节奏）
         raw = {
@@ -593,6 +626,7 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>仓储 AMR 竞品情报看板</title>
 <style>
+
   :root{
     --bg:#0f1420; --panel:#161c2b; --panel2:#1d2537; --line:#28324a;
     --fg:#e6ebf5; --dim:#8b97b0; --accent:#4f9cf9; --ok:#37c98b;
@@ -756,67 +790,104 @@ PAGE = r"""<!DOCTYPE html>
   .tab-n{font-size:11px;color:var(--dim);background:var(--panel2);
          padding:1px 7px;border-radius:9px}
   .tab.active .tab-n{color:var(--accent);background:rgba(79,156,249,.14)}
+  /* ── 新增控件样式 ─────────────────────────────── */
+  /* ── 多选下拉（信号类型）────────────────────────────── */
+  .msel{position:relative}
+  .msel-btn{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+            border-radius:6px;padding:7px 10px;font:inherit;font-size:13px;
+            cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .msel-btn:hover{border-color:var(--accent)}
+  .msel-caret{color:var(--dim);font-size:10px}
+  .msel-badge{background:var(--accent);color:#fff;font-size:11px;
+              padding:0 6px;border-radius:9px;display:none}
+  .msel-badge.show{display:inline-block}
+  .msel-menu{position:absolute;top:calc(100% + 4px);left:0;min-width:190px;
+             background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+             padding:6px;z-index:40;display:none;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .msel-menu.show{display:block}
+  .msel-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;
+             cursor:pointer;font-size:13px;white-space:nowrap}
+  .msel-item:hover{background:rgba(79,156,249,.12)}
+  .msel-item input{cursor:pointer}
+  .msel-item .n{color:var(--dim);font-size:11px;margin-left:auto}
+
+  /* ── 开关（显示低相关度）────────────────────────────── */
+  .switch{display:inline-flex;align-items:center;gap:6px;color:var(--dim);
+          font-size:13px;cursor:pointer;user-select:none;padding:7px 2px}
+  .switch:hover{color:var(--fg)}
+  .switch input{cursor:pointer;width:14px;height:14px;accent-color:var(--accent)}
+
+  /* ── 统计卡：纯展示，无 hover 反馈、无指针 ──────────── */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        padding:10px 12px;cursor:default}
 </style>
 </head>
 <body>
 <header>
-  <h1>仓储 AMR 竞品情报看板<span id="uptime"></span></h1>
+  <h1>仓储 AMR 竞品情报看板</h1>
   <div class="spacer"></div>
   <button onclick="reload()">刷新</button>
   <button onclick="exportCsv()">导出 CSV</button>
   <button onclick="markAllRead()">全部标为已读</button>
 </header>
 
-<!-- 两个 Tab：每日情报流 / 深度分析。切换时自动收敛频道范围，
-     避免两套性质不同的数据混在一起看。 -->
+<!-- Tab：只负责切换数据范围。不显示数字，避免与列表条数混淆。 -->
 <nav class="tabs">
-  <button class="tab active" data-tab="daily" onclick="switchTab('daily')">
-    每日情报<span class="tab-n" id="n-daily"></span>
-  </button>
-  <button class="tab" data-tab="deep" onclick="switchTab('deep')">
-    深度分析<span class="tab-n" id="n-deep"></span>
-  </button>
+  <button class="tab active" data-tab="daily" onclick="switchTab('daily')">每日情报</button>
+  <button class="tab" data-tab="deep" onclick="switchTab('deep')">深度分析</button>
 </nav>
 
+<!-- 统计：纯展示，不可点击。数字是"当前范围内的总数"。 -->
 <div class="stats" id="stats"></div>
+
 <div class="trend" id="trend"></div>
 
+<!-- 筛选栏：每个维度只出现一次 -->
 <div class="filters">
-  <select id="f-entity" onchange="apply()"><option value="">全部竞品</option></select>
-  <!-- 频道不再用下拉框：由顶部 Tab 决定范围，避免两处控件语义重复 -->
+  <select id="f-entity" onchange="apply()">
+    <option value="">全部竞品</option>
+  </select>
+
+  <!-- 信号类型：多选下拉。内容随 Tab 动态更换。 -->
+  <div class="msel" id="ms-signal">
+    <button class="msel-btn" onclick="toggleSignalMenu(event)">
+      信号类型<span class="msel-badge" id="ms-signal-badge"></span>
+      <span class="msel-caret">▾</span>
+    </button>
+    <div class="msel-menu" id="ms-signal-menu"></div>
+  </div>
+
+  <select id="f-days" onchange="apply()">
+    <option value="1">近 1 天</option>
+    <option value="7" selected>近 7 天</option>
+    <option value="30">近 30 天</option>
+    <option value="90">近 90 天</option>
+    <option value="365">近 1 年</option>
+    <option value="all">全部时间</option>
+  </select>
+
   <select id="f-status" onchange="apply()">
     <option value="">全部状态</option>
     <option value="new">未读</option>
     <option value="read">已读</option>
     <option value="archived">已归档</option>
   </select>
-  <select id="f-days" onchange="apply()">
-    <option value="all">全部时间</option>
-    <option value="1">近 1 天</option>
-    <option value="7" selected>近 7 天</option>
-    <option value="30">近 30 天</option>
-    <option value="90">近 90 天</option>
-    <option value="365">近 1 年</option>
-  </select>
+
+  <!-- 排序合并为一个下拉，不再拆成"字段 + 升降序" -->
   <select id="f-sort" onchange="apply()">
-    <option value="published_at">按时间</option>
-    <option value="relevance">按相关度</option>
-    <option value="entity">按竞品</option>
-    <option value="channel">按频道</option>
+    <option value="published_at:desc">最新优先</option>
+    <option value="published_at:asc">最早优先</option>
+    <option value="relevance:desc">相关度优先</option>
+    <option value="entity:asc">按竞品名</option>
   </select>
-  <select id="f-order" onchange="apply()">
-    <option value="desc">降序</option>
-    <option value="asc">升序</option>
-  </select>
-  <select id="f-minrel" onchange="apply()">
-    <option value="">全部相关度</option>
-    <option value="0.5">≥0.5</option>
-    <option value="0.7" selected>≥0.7</option>
-    <option value="0.9">≥0.9</option>
-  </select>
+
   <input type="search" id="f-q" placeholder="搜索标题 / 摘要 / 竞品…" oninput="debounced()">
-  <span class="hint">标签可多选 · 选中多个表示<b>任一命中</b></span>
-  <div class="tags" id="f-tags"></div>
+
+  <!-- 低相关度开关：替代原"相关度"下拉，语义更直白 -->
+  <label class="switch" title="勾选后显示系统判定价值较低的内容">
+    <input type="checkbox" id="f-lowrel" onchange="apply()">
+    <span>显示低相关度</span>
+  </label>
 </div>
 
 <div class="toolbar">
@@ -851,7 +922,396 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-// ── 极简 markdown 渲染（仅覆盖报告用到的语法）──────────────
+// ═══════════════════════════════════════════════════════════
+//  状态
+// ═══════════════════════════════════════════════════════════
+const S = {
+  tab: 'daily',          // daily | deep
+  signals: new Set(),    // 选中的信号类型（原"标签"）
+  items: [],
+  sel: new Set(),
+};
+
+// 各 Tab 的范围配置。每个维度只在一处定义，避免多处不一致。
+const TABS = {
+  daily: {
+    channels: ['media','tender','announcement','policy','finance','site_change'],
+    days: '7',
+    signals: ['重大变更','融资动态','融资信号','订单信号','新品发布',
+              '竞品命中','官网变更','中标','招标'],
+    lowRelDefault: false,   // 默认只看高相关
+  },
+  deep: {
+    channels: ['analysis','analysis_src'],
+    days: 'all',
+    signals: ['深度分析','搜索来源'],
+    lowRelDefault: true,    // 深度分析的数据相关度是人工值，默认全看
+  },
+};
+
+const $ = id => document.getElementById(id);
+const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  请求参数 —— 所有筛选条件在此集中组装
+// ═══════════════════════════════════════════════════════════
+function params(extra){
+  const cfg = TABS[S.tab];
+  const p = new URLSearchParams();
+
+  p.set('channels', cfg.channels.join(','));
+  p.set('tab', S.tab);
+
+  if($('f-entity').value) p.set('entity', $('f-entity').value);
+  if(S.signals.size)      p.set('tags', [...S.signals].join(','));
+  if($('f-days').value)   p.set('days', $('f-days').value);
+  if($('f-status').value) p.set('status', $('f-status').value);
+  if($('f-q').value)      p.set('q', $('f-q').value);
+
+  // 排序："字段:方向" 拆开传，兼容后端既有参数名
+  const [sf, so] = ($('f-sort').value || 'published_at:desc').split(':');
+  p.set('sort', sf);
+  p.set('order', so || 'desc');
+
+  // 「显示低相关度」开关：
+  //   勾上   -> 不施加门槛，全部显示
+  //   不勾上 -> 只显示相关度 >= 门槛的内容
+  // 门槛固定 0.7：这是采集数据的天然分界（高价值信号都在 0.7 以上），
+  // 不做成可选项是为了减少一个需要理解的旋钮。
+  if(!$('f-lowrel').checked) p.set('min_relevance', '0.7');
+
+  for(const k in (extra||{})) p.set(k, extra[k]);
+  return p.toString();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Tab 切换
+// ═══════════════════════════════════════════════════════════
+async function switchTab(name){
+  if(!TABS[name]) return;
+  S.tab = name;
+  document.querySelectorAll('.tab').forEach(el=>
+    el.classList.toggle('active', el.dataset.tab === name));
+
+  // 切换 Tab = 换一套数据，所有筛选条件重置为该 Tab 的默认值
+  S.signals.clear();
+  S.sel.clear(); renderSel();
+  $('f-entity').value = '';
+  $('f-q').value = '';
+  $('f-status').value = '';
+  $('f-sort').value = 'published_at:desc';
+  $('f-days').value = TABS[name].days;
+  $('f-lowrel').checked = !!TABS[name].lowRelDefault;
+
+  await apply();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  信号类型多选下拉
+// ═══════════════════════════════════════════════════════════
+function toggleSignalMenu(ev){
+  ev.stopPropagation();
+  const m = $('ms-signal-menu');
+  m.classList.toggle('show');
+}
+
+document.addEventListener('click', () => {
+  $('ms-signal-menu').classList.remove('show');
+});
+
+function toggleSignal(name){
+  S.signals.has(name) ? S.signals.delete(name) : S.signals.add(name);
+  renderSignalMenu();
+  apply();
+}
+
+let _signalCounts = {};
+
+function renderSignalMenu(){
+  const cfg = TABS[S.tab];
+  $('ms-signal-menu').innerHTML = cfg.signals.map(n=>{
+    const on = S.signals.has(n);
+    const c = _signalCounts[n];
+    return `<label class="msel-item" onclick="event.stopPropagation()">
+      <input type="checkbox" ${on?'checked':''} onchange="toggleSignal('${esc(n)}')">
+      <span>${esc(n)}</span>
+      ${c!==undefined?`<span class="n">${c}</span>`:''}
+    </label>`;
+  }).join('');
+
+  const badge = $('ms-signal-badge');
+  badge.textContent = S.signals.size;
+  badge.classList.toggle('show', S.signals.size > 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  构面（下拉选项 + 统计）
+// ═══════════════════════════════════════════════════════════
+async function loadFacets(){
+  const f = await api('/api/facets?' + params({omitTags: true, omitSignals: '1'}));
+
+  // ── 竞品下拉：增量更新，绝不重建 ──────────────────────
+  //
+  // 踩过的坑：原来是整体重建 innerHTML，当用户选的竞品在新条件下
+  // 没有记录时，它会从选项里消失，代码随即回退到"全部竞品" ——
+  // 于是筛选被静默取消，用户看到的是全部数据却以为筛选生效了。
+  // 这是危险的：可能漏掉重要信息还以为看全了。
+  //
+  // 现在的做法：只更新每个选项的计数文字；用户选中的竞品即使
+  // 条数为 0 也保留在列表里（标注 0），让"筛选意图"保持不变。
+  const es = $('f-entity');
+  const cur = es.value;
+
+  // 1) 保留已有选项（只显示竞品名，不带计数）
+  const seen = new Set(['']);
+  [...es.options].forEach(o=>{
+    if(o.value === '') return;
+    seen.add(o.value);
+    o.textContent = o.value;
+  });
+
+  // 2) 追加新出现的竞品（按计数降序插入到末尾之前）
+  f.entities.filter(e => !seen.has(e.value)).forEach(e=>{
+    const o = document.createElement('option');
+    o.value = e.value;
+    o.textContent = e.value;
+    es.appendChild(o);
+  });
+
+  // 3) 恢复选择 —— 即使该项条数为 0 也保留
+  es.value = cur;
+  if(es.value !== cur && cur){
+    // 极端情况：该项从未出现过（例如用户手改了 URL），补一个占位项
+    const o = document.createElement('option');
+    o.value = cur; o.textContent = cur;
+    es.appendChild(o); es.value = cur;
+  }
+
+  // 信号计数（用于多选下拉里显示各有多少条）
+  _signalCounts = {};
+  (f.tag_counts||[]).forEach(t => { _signalCounts[t.name] = t.count; });
+  renderSignalMenu();
+
+  // 统计卡：纯展示，不可点击
+  const s = f.stats;
+  const cards = [
+    ['全部', s.total],
+    ['今日新增', s.today],
+    ['未读', s.unread],
+    ['已加星', s.starred],
+  ];
+  $('stats').innerHTML = cards.map(([k,v])=>
+    `<div class="card"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`
+  ).join('');
+
+  renderTrend(f.trend);
+}
+
+function renderTrend(t){
+  if(!t || !t.length){ $('trend').innerHTML=''; return; }
+  const max = Math.max(...t.map(x=>x.count), 1);
+  $('trend').innerHTML = t.map(x=>
+    `<div class="bar" style="height:${Math.max(3, x.count/max*100)}%">
+       <span>${x.date} · ${x.count} 条</span></div>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  列表
+// ═══════════════════════════════════════════════════════════
+let _timer = null;
+function debounced(){ clearTimeout(_timer); _timer = setTimeout(apply, 260); }
+
+async function apply(){
+  $('list').classList.add('loading');
+  try{
+    await loadFacets();                       // 先刷新构面，保证数字与列表同步
+    const data = await api('/api/events?' + params({limit: 300}));
+    S.items = data.items;
+    S.sel.clear(); renderSel();
+    $('count').textContent =
+      `共 ${data.total} 条` + (data.items.length < data.total
+        ? `，显示前 ${data.items.length} 条` : '');
+    renderList();
+  }catch(e){
+    $('list').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }finally{
+    $('list').classList.remove('loading');
+  }
+}
+
+function pillClass(t){
+  if(t==='重大变更') return 'pill major';
+  if(t==='订单信号'||t==='中标') return 'pill order';
+  if(t==='竞品命中') return 'pill hit';
+  if(t==='深度分析') return 'pill hit';
+  return 'pill';
+}
+
+// 收集当前生效的筛选条件（用于空结果提示与调试）
+function activeFilters(){
+  const out = [];
+  if($('f-entity').value) out.push(`竞品＝${$('f-entity').value}`);
+  if(S.signals.size)      out.push(`信号＝${[...S.signals].join('、')}`);
+  if($('f-days').value && $('f-days').value !== 'all')
+                          out.push(`时间＝${$('f-days').selectedOptions[0].textContent}`);
+  if($('f-status').value) out.push(`状态＝${$('f-status').selectedOptions[0].textContent}`);
+  if($('f-q').value)      out.push(`搜索＝${$('f-q').value}`);
+  if(!$('f-lowrel').checked) out.push('仅高相关度');
+  return out;
+}
+
+function clearFilters(){
+  $('f-entity').value = '';
+  $('f-q').value = '';
+  $('f-status').value = '';
+  S.signals.clear();
+  $('f-days').value = TABS[S.tab].days;
+  $('f-lowrel').checked = !!TABS[S.tab].lowRelDefault;
+  renderSignalMenu();
+  apply();
+}
+
+function renderList(){
+  if(!S.items.length){
+    const conds = activeFilters();
+    $('list').innerHTML = `
+      <div class="empty">
+        <div style="font-size:15px;margin-bottom:8px">当前条件下没有记录</div>
+        ${conds.length?`<div style="color:var(--dim);font-size:13px;margin-bottom:12px">
+          生效的条件：${esc(conds.join(' · '))}</div>`:''}
+        ${conds.length?`<button onclick="clearFilters()">清除全部筛选</button>`:''}
+      </div>`;
+    return;
+  }
+  $('list').innerHTML = S.items.map(e=>{
+    const tags = (e.tags_list||[]).slice(0,6)
+      .map(t=>`<span class="${pillClass(t)}">${esc(t)}</span>`).join('');
+    const cls = ['row',
+      e.status==='read'?'read':'',
+      e.starred?'starred':'',
+      (e.tags_list||[]).includes('重大变更')?'major':'',
+      ((e.tags_list||[]).includes('订单信号')||(e.tags_list||[]).includes('中标'))?'order':''
+    ].join(' ');
+    const when = e.published_at || e.captured_at || '';
+
+    // 右侧「提炼」栏：内容由后端按频道决定，无内容则不渲染该栏
+    const hasBrief = !!(e.summary_long||'').trim();
+    const briefLabel = e.brief_label || '提炼';
+    const brief = hasBrief ? `
+      <aside class="brief">
+        <div class="brief-h">${esc(briefLabel)}</div>
+        <div class="brief-b">${esc(e.summary_long)}</div>
+      </aside>` : '';
+
+    return `<div class="${cls} ${hasBrief?'two-col':''}" id="row-${e.id}">
+      <input type="checkbox" onchange="toggleSel(${e.id}, this.checked)" ${S.sel.has(e.id)?'checked':''}>
+      <div class="body">
+        <div class="digest">${esc(e.digest)}</div>
+        ${e.impact?`<div class="impact">↳ ${esc(e.impact)}</div>`:''}
+        <div class="title-sub" title="点击「打开原文」查看全文">${esc(e.title)}</div>
+        <div class="meta">
+          <span class="pill">${esc(e.channel_label||'')}</span>
+          ${e.entity?`<b>${esc(e.entity)}</b>`:''}
+          <span>${esc(when)}</span>
+          <span>${esc(e.source_name||'')}</span>
+        </div>
+        <div class="meta">${tags}</div>
+        <div class="acts">
+          ${e.report_id?`<button class="primary" onclick="openReport(${e.report_id},'${esc(e.entity||'')} 深度分析报告')">查看完整报告</button>`:''}
+          ${e.url?`<a href="${esc(e.url)}" target="_blank" rel="noopener"><button>打开原文</button></a>`:''}
+          <button onclick="toggleNote(${e.id})">${e.note?'编辑备注':'添加备注'}</button>
+          <button onclick="patch(${e.id},{status:'${e.status==='read'?'new':'read'}'})">
+            ${e.status==='read'?'标为未读':'标为已读'}</button>
+          <button onclick="patch(${e.id},{starred:${e.starred?0:1}})">${e.starred?'取消星标':'加星'}</button>
+          <button onclick="patch(${e.id},{status:'archived'})">归档</button>
+        </div>
+        <input class="note ${e.note?'show':''}" id="note-${e.id}" value="${esc(e.note||'')}"
+               placeholder="备注（自动保存）"
+               onblur="saveNote(${e.id}, this.value)"
+               onkeydown="if(event.key==='Enter'){this.blur()}">
+      </div>${brief}
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  单项操作
+// ═══════════════════════════════════════════════════════════
+function toggleNote(id){
+  const el = $('note-'+id);
+  el.classList.toggle('show');
+  if(el.classList.contains('show')) el.focus();
+}
+
+async function saveNote(id, val){
+  await api('/api/update', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, fields:{note: val}})});
+}
+
+async function patch(id, fields){
+  await api('/api/update', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, fields})});
+  apply();
+}
+
+function toggleSel(id, on){
+  on ? S.sel.add(id) : S.sel.delete(id);
+  renderSel();
+}
+
+function renderSel(){
+  const n = S.sel.size;
+  $('selbar').classList.toggle('show', n>0);
+  $('selcount').textContent = `已选 ${n} 条`;
+  $('selinfo').textContent = n ? `已选 ${n} 条` : '';
+}
+
+function clearSel(){ S.sel.clear(); renderSel(); }
+
+async function bulk(action){
+  if(!S.sel.size) return;
+  await api('/api/bulk', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ids:[...S.sel], action})});
+  S.sel.clear(); renderSel(); apply();
+}
+
+async function markAllRead(){
+  const ids = S.items.filter(e=>e.status==='new').map(e=>e.id);
+  if(!ids.length) return alert('当前列表没有未读记录');
+  if(!confirm(`把当前显示的 ${ids.length} 条标为已读？`)) return;
+  await api('/api/bulk', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ids, action:'read'})});
+  apply();
+}
+
+function exportCsv(){ window.location = '/api/export?' + params(); }
+function reload(){ apply(); }
+
+// ── 初始化 ────────────────────────────────────────────────
+// 用 TABS 的默认值填充控件，然后首次加载。
+// 注意：这里必须显式调用，否则页面会一片空白（所有渲染都由 apply() 触发）。
+(function initUI(){
+  const cfg = TABS[S.tab];
+  $('f-days').value = cfg.days;
+  $('f-lowrel').checked = !!cfg.lowRelDefault;
+  $('f-sort').value = 'published_at:desc';
+  document.querySelectorAll('.tab').forEach(el=>
+    el.classList.toggle('active', el.dataset.tab === S.tab));
+  renderSignalMenu();
+  apply();
+  // 每 60 秒自动刷新一次，保持数据新鲜
+  setInterval(apply, 60000);
+})();
+</script>
+
+<script>
 function mdToHtml(md){
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const codes = [];
@@ -916,289 +1376,6 @@ async function openReport(id, title){
 
 function closeReport(){ $('reportMask').classList.remove('show'); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeReport(); });
-</script>
-</body>
-
-<script>
-const S = {tags:new Set(), items:[], sel:new Set(), starred:false, tab:'daily'};
-
-// 两个 Tab 各自对应的频道集合。
-// daily = 每日直采的情报流；deep = competitor-intel 的深度分析产物。
-const TAB_CHANNELS = {
-  daily: ['media','tender','announcement','policy','finance','site_change'],
-  deep:  ['analysis','analysis_src'],
-};
-const TAB_DAYS = { daily: '7', deep: 'all' };   // 各 Tab 的默认时间范围
-const $ = id => document.getElementById(id);
-const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-async function api(path, opts){
-  const r = await fetch(path, opts);
-  if(!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-function params(opts){
-  const o = opts || {};
-  const p = new URLSearchParams();
-  const put=(k,v)=>{ if(v) p.set(k,v); };
-  put('entity', $('f-entity').value);
-  // 频道由 Tab 决定（后端用 channels 多值参数），不再用单值 channel
-  put('channels', TAB_CHANNELS[S.tab].join(','));
-  put('tab', S.tab);
-  put('status', $('f-status').value);
-  put('days', $('f-days').value);
-  put('sort', $('f-sort').value);
-  put('order', $('f-order').value);
-  put('min_relevance', $('f-minrel').value);
-  put('q', $('f-q').value);
-  // omitTags: 构面统计要基于"除标签外"的条件，标签之间是 OR，互不约束
-  if(!o.omitTags && S.tags.size) p.set('tags', [...S.tags].join(','));
-  if(S.starred) p.set('starred', '1');
-  return p.toString();
-}
-
-// ── 筛选器与统计 ──────────────────────────────────────────
-async function loadFacets(){
-  // 构面统计要带上当前筛选条件（不含 tags），这样标签上的数字
-  // 才等于"点下去会看到的条数"，而不是脱离上下文的全局总数。
-  const data = await api('/api/facets?' + params({omitTags:true}));
-  const f = data;
-  const es = $('f-entity');
-  // 重建下拉前先记住当前选择 —— 否则每轮刷新都会把用户选的竞品冲掉，
-  // 表现为"选了别的竞品又跳回全部竞品"。
-  const keep = es.value;
-  es.innerHTML = '<option value="">全部竞品</option>' +
-    f.entities.map(e=>`<option value="${esc(e.value)}">${esc(e.value)} (${e.count})</option>`).join('');
-  // 若原选择仍在新列表中则恢复；否则回退到"全部"（该竞品在本筛选下已无数据）
-  if(keep && [...es.options].some(o=>o.value === keep)) es.value = keep;
-  // Tab 上的条数：用构面返回的频道计数，按 Tab 归组求和
-  const cnt = {};
-  f.channels.forEach(c=>{ cnt[c.value] = c.count; });
-  const sum = arr => arr.reduce((a,c)=>a+(cnt[c]||0), 0);
-  $('n-daily').textContent = sum(TAB_CHANNELS.daily);
-  $('n-deep').textContent = sum(TAB_CHANNELS.deep);
-  // 标签栏：带各标签条数，多选为「任一命中」(OR)。
-  // 计数由服务端按与筛选完全相同的口径算出，避免"显示 N 条、点进去 M 条"。
-  $('f-tags').innerHTML = f.tag_counts.map(t=>
-    `<div class="tag${S.tags.has(t.name)?' on':''}${t.count?'':' zero'}"
-          title="${esc(t.name)}：${t.count} 条"
-          onclick="toggleTag('${esc(t.name)}')">${esc(t.name)}<b>${t.count}</b></div>`
-  ).join('');
-
-  const s = f.stats;
-  // 统计卡只保留「状态维度」（全部/今日/未读/已加星）。
-  // 标签维度的快捷入口统一交给下方标签栏，避免同一条件出现两套控件
-  // 且行为不一致（此前卡片会清空筛选、同名标签却是叠加）。
-  const cards = [
-    {k:'全部',     v:s.total,   q:''},
-    {k:'今日新增', v:s.today,   q:''},
-    {k:'未读',     v:s.unread,  q:'status=new'},
-    {k:'已加星',   v:s.starred, q:'starred=1'},
-  ];
-  $('stats').innerHTML = cards.map(c=>
-    `<div class="card" data-q="${esc(c.q)}" onclick="quick('${esc(c.q)}')">
-       <div class="k">${c.k}</div><div class="v">${c.v}</div></div>`).join('');
-
-  renderTrend(f.trend);
-}
-
-function renderTrend(t){
-  if(!t || !t.length){ $('trend').innerHTML=''; return; }
-  const max = Math.max(...t.map(x=>x.count), 1);
-  $('trend').innerHTML = t.map(x=>
-    `<div class="bar" style="height:${Math.max(3, x.count/max*100)}%">
-       <span>${x.date} · ${x.count} 条</span></div>`).join('');
-}
-
-function quick(q){
-  // 统计卡只负责「状态维度」：清空标签等条件，只保留卡片语义。
-  // 频道范围由 Tab 决定，不在此重置。
-  //
-  // 关键：时间范围统一归位到当前 Tab 的默认值，而不是固定 all。
-  // 此前「全部」卡强制设 days=all，导致反复点击时卡片数字在
-  // 91/261/452 之间跳 —— 因为每次点都会切时间范围。
-  $('f-entity').value='';
-  $('f-q').value=''; $('f-minrel').value='';
-  $('f-status').value='';
-  S.tags.clear();
-  S.starred = false;
-
-  // 相关度也归位到默认（视为「重置」而非「叠加」）
-  $('f-minrel').value = '';
-  $('f-days').value = TAB_DAYS[S.tab];
-
-  if(q){
-    const p = new URLSearchParams(q);
-    if(p.get('status')) $('f-status').value = p.get('status');
-    if(p.get('starred')) S.starred = true;
-  }
-  syncTagChips();
-  apply();
-}
-
-function toggleTag(t){
-  S.tags.has(t) ? S.tags.delete(t) : S.tags.add(t);
-  syncTagChips();
-  apply();
-}
-
-function syncTagChips(){
-  document.querySelectorAll('#f-tags .tag').forEach(el=>{
-    const name = el.firstChild.textContent.trim();
-    el.classList.toggle('on', S.tags.has(name));
-  });
-}
-
-let timer=null;
-function debounced(){ clearTimeout(timer); timer=setTimeout(apply, 260); }
-function clearSel(){ S.sel.clear(); renderSel(); }
-
-// ── Tab 切换 ─────────────────────────────────────────────
-function switchTab(name){
-  if(!TAB_CHANNELS[name]) return;
-  S.tab = name;
-  document.querySelectorAll('.tab').forEach(el=>
-    el.classList.toggle('active', el.dataset.tab === name));
-  // 两个 Tab 的数据性质不同，默认时间范围也应不同：
-  // 每日情报看近 7 天，深度分析看全部（报告是累计的）
-  $('f-days').value = TAB_DAYS[name];
-  // 切换 Tab 时清空选择，避免跨 Tab 误操作
-  S.sel.clear(); renderSel();
-  apply();
-}
-
-// ── 列表 ─────────────────────────────────────────────────
-async function apply(){
-  $('list').classList.add('loading');
-  try{
-    // 先刷新构面：标签数字依赖当前的非标签筛选条件，必须与列表同步更新
-    await loadFacets();
-    const data = await api('/api/events?' + params({limit:300}));
-    S.items = data.items;
-    S.sel.clear(); renderSel();
-    $('count').textContent = `共 ${data.total} 条，显示 ${data.items.length} 条`;
-    renderList();
-  } catch(e){
-    $('list').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
-  } finally { $('list').classList.remove('loading'); }
-}
-
-function pillClass(t){
-  if(t==='重大变更') return 'pill major';
-  if(t==='订单信号'||t==='中标') return 'pill order';
-  if(t==='竞品命中') return 'pill hit';
-  return 'pill';
-}
-
-function renderList(){
-  if(!S.items.length){ $('list').innerHTML='<div class="empty">没有匹配的记录</div>'; return; }
-  $('list').innerHTML = S.items.map(e=>{
-    const tags = (e.tags_list||[]).slice(0,6)
-      .map(t=>`<span class="${pillClass(t)}">${esc(t)}</span>`).join('');
-    const cls = [ 'row', e.status==='read'?'read':'', e.starred?'starred':'',
-      (e.tags_list||[]).includes('重大变更')?'major':'',
-      ((e.tags_list||[]).includes('订单信号')||(e.tags_list||[]).includes('中标'))?'order':''
-    ].join(' ');
-    const when = e.published_at || e.captured_at || '';
-    // 右侧「提炼」区：把这条信息摊开讲。默认展开（用户要求），
-    // 右侧栏标题由后端按频道决定（提炼 / 战略摘要 / 来源说明），
-    // 回退到「提炼」以兼容旧数据。无内容时整栏不渲染。
-    const hasBrief = !!(e.summary_long || '').trim();
-    const briefLabel = e.brief_label || (e.from_llm ? '提炼'
-      : (e.has_body ? '提炼 · 正文摘录' : '提炼'));
-    const brief = hasBrief ? `
-      <aside class="brief">
-        <div class="brief-h">${esc(briefLabel)}</div>
-        <div class="brief-b">${esc(e.summary_long)}</div>
-      </aside>` : '';
-    return `<div class="${cls} ${hasBrief?'two-col':''}" id="row-${e.id}">
-      <input type="checkbox" onchange="toggleSel(${e.id}, this.checked)" ${S.sel.has(e.id)?'checked':''}>
-      <div class="body">
-        <div class="digest">${esc(e.digest)}</div>
-        ${e.impact?`<div class="impact">↳ ${esc(e.impact)}</div>`:''}
-        <div class="title-sub" title="点击「打开原文」查看全文">${esc(e.title)}</div>
-        <div class="meta">
-          <span class="pill">${esc(e.channel_label||'')}</span>
-          ${e.entity?`<b>${esc(e.entity)}</b>`:''}
-          <span>相关度 ${e.relevance}</span>
-          <span>${esc(when)}</span>
-          <span>${esc(e.source_name||'')}</span>
-        </div>
-        <div class="meta">${tags}</div>
-        <div class="acts">
-          ${e.report_id?`<button class="primary" onclick="openReport(${e.report_id},'${esc(e.entity||'')} 深度分析报告')">查看完整报告</button>`:''}
-          ${e.url?`<a href="${esc(e.url)}" target="_blank" rel="noopener"><button>打开原文</button></a>`:''}
-          <button onclick="toggleNote(${e.id})">${e.note?'编辑备注':'添加备注'}</button>
-          <button onclick="patch(${e.id},{status:'${e.status==='read'?'new':'read'}'})">
-            ${e.status==='read'?'标为未读':'标为已读'}</button>
-          <button onclick="patch(${e.id},{starred:${e.starred?0:1}})">${e.starred?'取消星标':'加星'}</button>
-          <button onclick="patch(${e.id},{status:'archived'})">归档</button>
-        </div>
-        <input class="note ${e.note?'show':''}" id="note-${e.id}" value="${esc(e.note||'')}"
-               placeholder="备注（自动保存）"
-               onblur="saveNote(${e.id}, this.value)"
-               onkeydown="if(event.key==='Enter'){this.blur()}">
-      </div>${brief}
-    </div>`;
-  }).join('');
-}
-
-function toggleNote(id){
-  const el = $('note-'+id);
-  el.classList.toggle('show');
-  if(el.classList.contains('show')) el.focus();
-}
-
-async function saveNote(id, val){
-  await api('/api/update', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id, fields:{note: val}})});
-}
-
-async function patch(id, fields){
-  await api('/api/update', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id, fields})});
-  apply();
-}
-
-function toggleSel(id, on){
-  on ? S.sel.add(id) : S.sel.delete(id);
-  renderSel();
-}
-
-function renderSel(){
-  const n = S.sel.size;
-  $('selbar').classList.toggle('show', n>0);
-  $('selcount').textContent = `已选 ${n} 条`;
-  $('selinfo').textContent = n ? `已选 ${n} 条` : '';
-}
-
-async function bulk(action){
-  if(!S.sel.size) return;
-  await api('/api/bulk', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ids:[...S.sel], action})});
-  S.sel.clear(); renderSel(); apply();
-}
-
-async function markAllRead(){
-  const ids = S.items.filter(e=>e.status==='new').map(e=>e.id);
-  if(!ids.length) return alert('当前列表没有未读记录');
-  if(!confirm(`把当前显示的 ${ids.length} 条标为已读？`)) return;
-  await api('/api/bulk', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ids, action:'read'})});
-  apply();
-}
-
-function exportCsv(){
-  window.location = '/api/export?' + params();
-}
-
-function reload(){ apply(); }
-
-// 首次加载：apply() 内部会先刷新构面，无需重复调用
-apply();
-setInterval(apply, 60000);
 </script>
 </body>
 </html>
