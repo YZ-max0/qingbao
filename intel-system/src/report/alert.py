@@ -50,7 +50,7 @@ def collect_new(conn, cfg: dict, channel: str) -> list[dict]:
         """
         SELECT e.* FROM events e
         LEFT JOIN alerts_sent a
-          ON a.event_id = e.id AND a.channel = ?
+          ON a.event_id = e.id AND a.channel = ? AND a.ok = 1
         WHERE a.id IS NULL
           AND e.relevance >= ?
         ORDER BY e.relevance DESC, e.published_at DESC
@@ -89,7 +89,7 @@ def absorb_backlog(conn, cfg: dict, channel: str, pending: int) -> int:
         """
         SELECT e.id, e.tags FROM events e
         LEFT JOIN alerts_sent a
-          ON a.event_id = e.id AND a.channel = ?
+          ON a.event_id = e.id AND a.channel = ? AND a.ok = 1
         WHERE a.id IS NULL AND e.relevance >= ?
         ORDER BY e.relevance DESC, e.published_at DESC
         """,

@@ -11,15 +11,17 @@ import os
 import sys
 import time
 
-sys.path.insert(0, r'D:\Harness-spaces\competitor-intel')
-sys.path.insert(0, r'D:\Harness-spaces\爬取')
+_CI_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _CI_ROOT)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_CI_ROOT))
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'intel-system'))
 
 from core.orchestrator import Orchestrator  # noqa: E402
 from src.adapters import (  # noqa: E402
     context_exporter, report_sync_adapter, source_import_adapter,
 )
 
-OUTDIR = r'D:\Harness-spaces\competitor-reports'
+OUTDIR = os.environ.get('REPORT_DIR') or os.path.join(_PROJECT_ROOT, 'competitor-reports')
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'blank_batch.log')
 BLANK = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'blank_targets.json')
 OUR = '磅旗科技（仓储AMR：料箱机器人、货到人、无人叉车、仓储集成）'

@@ -17,18 +17,24 @@ import os
 import sys
 import time
 
-sys.path.insert(0, r'D:\Harness-spaces\competitor-intel')
+# 全部路径基于脚本自身位置推导 —— 保证 third_party 目录自包含，
+# 不依赖项目外部的副本（否则会加载到旧代码、报告也会写错地方）。
+_CI_ROOT = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_CI_ROOT))   # 上两级 = 工作区根
+
+sys.path.insert(0, _CI_ROOT)
 
 from core.orchestrator import Orchestrator  # noqa: E402
 
-OUTDIR = r'D:\Harness-spaces\competitor-reports'
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'batch_analysis.log')
+# 报告输出到工作区根下的 competitor-reports（与 sync 端约定一致）
+OUTDIR = os.environ.get('REPORT_DIR') or os.path.join(_PROJECT_ROOT, 'competitor-reports')
+LOG = os.path.join(_CI_ROOT, 'logs', 'batch_analysis.log')
 OUR = '磅旗科技（仓储AMR：料箱机器人、货到人、无人叉车、仓储集成）'
 # 与自建情报系统共用同一份竞品名单
-COMPETITORS_YAML = r'D:\Harness-spaces\爬取\config\competitors.yaml'
+COMPETITORS_YAML = os.path.join(_PROJECT_ROOT, 'intel-system', 'config', 'competitors.yaml')
 
 # 报告生成后自动同步到自建看板（reports 表 + events）
-sys.path.insert(0, r'D:\Harness-spaces\爬取')
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'intel-system'))
 try:
     from src.adapters import report_sync_adapter, context_exporter, source_import_adapter
 except Exception:  # noqa: BLE001

@@ -35,9 +35,58 @@ Write-Log "============================================"
 Write-Log "[START] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Log "============================================"
 
-# Python interpreter: override with the PYTHON_EXE environment variable
-# if your interpreter is not on PATH.
-$py = if ($env:PYTHON_EXE) { $env:PYTHON_EXE } else { 'python' }
+# ── 选择 Python 解释器 ─────────────────────────────────────
+#
+# 踩过的坑（2026-10-17 起连续三天任务失败）：
+#   原来这里写死 'python'，依赖 PATH。计划任务环境下的 PATH 解析到了
+#   另一个 Python（系统 Python 3.12），而依赖只装在别处，
+#   于是 `import bs4` 失败、整条链路中断，且退出码 1 不易察觉。
+#
+# 现在按优先级探测，选中**能真正跑起来**的那个解释器：
+#   1. PYTHON_EXE 环境变量（显式覆盖，最高优先级）
+#   2. 项目内的 .venv（推荐做法：完全自包含）
+#   3. 已安装本项目依赖（bs4）的解释器 —— 依次尝试已知候选
+#   4. 兜底：PATH 里的 python
+#
+# 判定标准用 `import bs4`，因为它是本项目最基础的第三方依赖，
+# 比检查 python 版本更能反映"这个解释器能不能跑起来"。
+
+function Test-PythonUsable([string]$exe) {
+    if (-not $exe) { return $false }
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        & $exe -c "import bs4" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+$venvPy = Join-Path $proj '.venv\Scripts\python.exe'
+
+$candidates = @()
+if ($env:PYTHON_EXE) { $candidates += $env:PYTHON_EXE }
+$candidates += $venvPy
+# 本次部署实际使用的解释器（DSH 运行时）
+$candidates += 'C:\Users\EDY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+$candidates += 'python'
+
+$py = $null
+foreach ($c in $candidates) {
+    if (Test-PythonUsable $c) {
+        $py = $c
+        break
+    }
+    if ($c) { Write-Log "  跳过不可用的解释器: $c" }
+}
+
+if (-not $py) {
+    Write-Log "[FATAL] 找不到可用的 Python 解释器（需要能 import bs4）。"
+    Write-Log "        请设置 PYTHON_EXE 环境变量，或在项目内创建 .venv 并安装 requirements.txt"
+    exit 1
+}
+
+Write-Log "Python: $py"
 $env:PYTHONIOENCODING = 'utf-8'
 
 # ── Credentials ────────────────────────────────────────────
